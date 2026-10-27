@@ -1,0 +1,145 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================
+    // FUNCTIONS
+    // =========================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated()
+        && exists(
+          /databases/$(database)/documents/admins/$(request.auth.uid)
+        )
+        && get(
+          /databases/$(database)/documents/admins/$(request.auth.uid)
+        ).data.status == "active";
+    }
+
+    function isSuperAdmin() {
+      return isAdmin()
+        && get(
+          /databases/$(database)/documents/admins/$(request.auth.uid)
+        ).data.role == "superadmin";
+    }
+
+    function isOrderOwner() {
+      return isAuthenticated()
+        && resource.data.userId == request.auth.uid;
+    }
+
+    function isNewOrderOwner() {
+      return isAuthenticated()
+        && request.resource.data.userId == request.auth.uid;
+    }
+
+
+    // =========================
+    // PRODUCTS
+    // =========================
+
+    match /products/{productId} {
+      allow read: if true;
+
+      allow create, delete: if isAdmin();
+
+      // Le client peut uniquement diminuer le stock.
+      // L'administrateur conserve tous les droits.
+      allow update: if isAdmin()
+        || (
+          request.resource.data.diff(resource.data)
+            .affectedKeys()
+            .hasOnly(['stock'])
+          && request.resource.data.stock is int
+          && request.resource.data.stock >= 0
+          && request.resource.data.stock <= resource.data.stock
+        );
+    }
+
+
+    // =========================
+    // ORDERS
+    // =========================
+
+    match /orders/{orderId} {
+
+      // Un client connecté peut créer uniquement
+      // une commande liée à son propre compte.
+      // Un administrateur peut également créer une commande.
+      allow create: if isAdmin()
+        || (
+          isAuthenticated()
+          && request.resource.data.userId == request.auth.uid
+        );
+
+      // Un client peut lire uniquement ses propres commandes.
+      // Un administrateur peut lire toutes les commandes.
+      allow read: if isAdmin()
+        || isOrderOwner();
+
+      // Seul un administrateur peut modifier une commande.
+      allow update, delete: if isAdmin();
+    }
+
+
+    // =========================
+    // USERS
+    // =========================
+
+    match /users/{userId} {
+
+      // Création autorisée pour un utilisateur connecté
+      // si le champ authUid correspond à son compte Firebase.
+      // Les administrateurs peuvent également créer.
+      allow create: if isAdmin()
+        || (
+          isAuthenticated()
+          && request.resource.data.authUid == request.auth.uid
+        );
+
+      // Un client peut modifier uniquement ses propres
+      // informations liées à son compte Firebase.
+      // L'administrateur conserve tous les droits.
+      allow update: if isAdmin()
+        || (
+          isAuthenticated()
+          && resource.data.authUid == request.auth.uid
+          && request.resource.data.authUid == request.auth.uid
+        );
+
+      // Lecture et suppression réservées aux administrateurs.
+      allow read, delete: if isAdmin();
+    }
+
+
+    // =========================
+    // ORDER COUNTER / SETTINGS
+    // =========================
+
+    match /settings/{settingId} {
+      // Conservation de votre fonctionnement actuel.
+      allow read, write: if true;
+    }
+
+
+    // =========================
+    // ADMINS
+    // =========================
+
+    match /admins/{adminId} {
+
+      allow read: if isAuthenticated()
+        && (
+          request.auth.uid == adminId
+          || isSuperAdmin()
+        );
+
+      allow create, update, delete: if isSuperAdmin();
+    }
+  }
+}
